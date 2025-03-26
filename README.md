@@ -25,10 +25,10 @@ Dependencies can be installed by:
 
 PyPI install, presuming you have all its requirements installed:
 ```
-    pip install methyl
+    pip install methylverse
 ```
 
-## Benchmark
+## Quick start
 
 Test numpy random integers:
 
@@ -37,6 +37,11 @@ import MethylVerse as mv
 
 beta_values = mv.core.read_methylation("path/to/methylation")
 
+```
+
+Run the M-PACT classifier from the cammandline
+```
+	python -m MethylVerse MPACT example.bedgraph --impute --regress --call_cnvs --verbose
 ```
 
 
