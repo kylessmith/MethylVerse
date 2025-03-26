@@ -3,7 +3,7 @@
 [![Build Status](https://travis-ci.org/kylessmith/MethylVerse.svg?branch=master)](https://travis-ci.org/kylessmith/MethylVerse) [![PyPI version](https://badge.fury.io/py/ailist.svg)](https://badge.fury.io/py/methyl)
 [![Coffee](https://img.shields.io/badge/-buy_me_a%C2%A0coffee-gray?logo=buy-me-a-coffee&color=ff69b4)](https://www.buymeacoffee.com/kylessmith)
 
-![Alt text](MethylVerse_logo.png)
+<img src="MethylVerse_logo.png" width="300" />
 Library to work with WGBS, EM-seq, and/or methylation array data in one interface.
 
 
