@@ -7,7 +7,7 @@ from .core.sequencing.sequencing_core import process_sequencing
 from .core.utilities import *
 from .plot.plot_plt import *
 from .tools.decomposition.decompose import *
-from .data.download_data import download_methyl_anno
+from .data.download_data import download_methyl_anno, download_MPACT
 
 from . import tools as tl
 from . import plot as pl
@@ -17,7 +17,7 @@ from . import recipes
 download_methyl_anno()
 
 # This is extracted automatically by the top-level setup.py.
-__version__ = '0.0.9'
+__version__ = '0.1.0'
 __author__ = "Kyle S. Smith"
 
 

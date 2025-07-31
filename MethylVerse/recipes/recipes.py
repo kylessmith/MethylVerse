@@ -6,7 +6,8 @@ import ngsfragments as ngs
 
 # Local imports
 from ..data.import_data import get_data_file
-from ..tools.classifiers.MPACT.MPACT_classifier import MPACT_classifier
+from ..data.download_data import download_MPACT
+from ..tools.classifiers.MPACT.MPACT_classifier_torch import MPACT_classifier
 from ..tools.decomposition.reference_decom import remove_normal_csf, tumor_decomposition
 from ..tools.imputation.imputeEPIC import impute_epic, EPICimputer
 from ..tools.cnvs.seq_cnv_calling import sequencing_call_cnvs
@@ -19,10 +20,14 @@ def MPACT_process_raw(input_data: List[str],
                         impute: bool = False,
                         regress: bool = False,
                         probability_threshold: float = 0.7,
+                        max_contamination_fraction: float = 0.5,
                         call_cnvs: bool = False,
+                        output_cnv: str = None,
                         verbose: bool = False) -> pd.DataFrame:
     """
     """
+    # Check data downloaded
+    download_MPACT()
 
     # Initialize
     is_sequencing = True
@@ -42,9 +47,9 @@ def MPACT_process_raw(input_data: List[str],
         data = data.loc[:,~data.columns.duplicated()]
     else:
         if "Red" in input_data[0]:
-            sample_name = os.path.basename(input_data[0]).split(".Red")[0]
+            sample_name = os.path.basename(input_data[0]).split("_Red")[0]
         else:
-            sample_name = os.path.basename(input_data[0]).split(".Grn")[0]
+            sample_name = os.path.basename(input_data[0]).split("_Grn")[0]
         raw_array = RawArray(input_data, genome_version="hg38", n_jobs=1, verbose=False)
         data = raw_array.get_betas()
         data.index = [sample_name]
@@ -65,30 +70,37 @@ def MPACT_process_raw(input_data: List[str],
     # Regress
     if regress:
         if verbose: print("Regressing data", flush=True)
-        transformed_data = remove_normal_csf(data)
+        transformed_data = remove_normal_csf(data, max_fraction=max_contamination_fraction)
 
     # Classify
     # Get classifier files
     if verbose: print("Classifying data", flush=True)
-    onnx_directory = os.path.dirname(get_data_file("MPACT_dense1_v1.onnx"))
+    onnx_directory = os.path.dirname(get_data_file("MPACT_D1_v1.pth"))
     classifier = MPACT_classifier(onnx_directory+"/")
     if regress:
         transformed_data = (transformed_data * 2) - 1
     else:
         transformed_data = (data * 2) - 1
     transformed_data.fillna(0, inplace=True)
-    predictions = classifier.predict(transformed_data)
+    predictions = classifier.predict(transformed_data, transform=False)
     prediction = predictions[0][0]
     probability = predictions[1].loc[:,prediction].values[0]
 
     # Deconvolve
     if verbose: print("Deconvolving data", flush=True)
-    if probability > probability_threshold:
+    if probability > probability_threshold and prediction != "NonmalignantBackground":
         decon = tumor_decomposition(data, [prediction], verbose=False)
         purity = decon.values[0]
         if purity == 0 and prediction != "NonmalignantBackground":
             prediction = "NonmalignantBackground"
             purity = 1.0
+            probability = 1.0
+    elif probability < probability_threshold and prediction == "NonmalignantBackground":
+        secondary_prediction = predictions[1].columns.values[predictions[1].values.argsort()[0][-2]]
+        decon = tumor_decomposition(data, [secondary_prediction], verbose=False)
+        # GCT corresponds to over regressed samples meaning no tumor
+        if decon.values[0] == 0 or secondary_prediction == "GCT":
+            purity = 0.0
             probability = 1.0
     else:
         purity = 0.0
@@ -102,22 +114,38 @@ def MPACT_process_raw(input_data: List[str],
             cnvs = sequencing_call_cnvs(data)
 
             # Plot CNVs
-            ngs.plot.plot_cnv(cnvs.pf,
+            if output_cnv is not None:
+                ngs.plot.plot_cnv(cnvs.pf,
                                 obs = sample_name,
                                 show = False,
-                                save = sample_name+"_cnvs.pdf",
+                                save = output_cnv,
                                 plot_max = 5,
                                 plot_min = -3)
+            else:
+                ngs.plot.plot_cnv(cnvs.pf,
+                                    obs = sample_name,
+                                    show = False,
+                                    save = sample_name+"_cnvs.pdf",
+                                    plot_max = 5,
+                                    plot_min = -3)
         else:
             cnvs = microarray_call_cnvs(raw_array)
 
             # Plot CNVs
-            ngs.plot.plot_cnv(cnvs.pf,
+            if output_cnv is not None:
+                ngs.plot.plot_cnv(cnvs.pf,
                                 obs = sample_name,
                                 show = False,
-                                save = sample_name+"_cnvs.pdf",
+                                save = output_cnv,
                                 plot_max = 2,
                                 plot_min = -2)
+            else:
+                ngs.plot.plot_cnv(cnvs.pf,
+                                    obs = sample_name,
+                                    show = False,
+                                    save = sample_name+"_cnvs.pdf",
+                                    plot_max = 2,
+                                    plot_min = -2)
         if verbose: print("Output plots saved:", sample_name+"_cnvs.pdf", flush=True)
 
         # Construct results

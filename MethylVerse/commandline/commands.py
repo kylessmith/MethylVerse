@@ -29,6 +29,7 @@ def MPACT_process_single(args):
                                         impute = args.impute,
                                         regress = args.regress,
                                         probability_threshold = args.probability_threshold,
+                                        max_contamination_fraction = args.max_contamination_fraction,
                                         call_cnvs = args.call_cnvs,
                                         verbose = args.verbose)
     classifications.to_csv(args.out, header=True, index=True, sep="\t")

@@ -1,6 +1,6 @@
 # MethylVerse
 
-[![Build Status](https://travis-ci.org/kylessmith/MethylVerse.svg?branch=master)](https://travis-ci.org/kylessmith/MethylVerse) [![PyPI version](https://badge.fury.io/py/ailist.svg)](https://badge.fury.io/py/methyl)
+[![Build Status](https://travis-ci.org/kylessmith/MethylVerse.svg?branch=master)](https://travis-ci.org/kylessmith/MethylVerse) [![PyPI version](https://badge.fury.io/py/MethylVerse.svg)](https://badge.fury.io/py/MethylVerse)
 [![Coffee](https://img.shields.io/badge/-buy_me_a%C2%A0coffee-gray?logo=buy-me-a-coffee&color=ff69b4)](https://www.buymeacoffee.com/kylessmith)
 
 <img src="MethylVerse_logo.png" width="300" />
@@ -41,7 +41,7 @@ beta_values = mv.core.read_methylation("path/to/methylation")
 
 Run the M-PACT classifier from the cammandline
 ```
-	python -m MethylVerse MPACT example.bedgraph --impute --regress --call_cnvs --verbose
+python -m MethylVerse MPACT example.bedgraph --impute --regress --call_cnvs --verbose
 ```
 
 

@@ -40,7 +40,7 @@ def beta_binomial_methylation(beta_values, sample_labels, weights=None):
                         family=sm.families.Binomial(),
                         freq_weights=weights).fit()
 
-    return model.summary()
+    return model
 
 
 def beta_binomial_log_likelihood(params, methylated_counts, total_counts, sample_labels):

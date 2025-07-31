@@ -11,6 +11,10 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, WhiteKernel
 from ailist import LabeledIntervalArray
 from intervalframe import IntervalFrame
+from scipy.interpolate import UnivariateSpline
+from sklearn.preprocessing import StandardScaler
+from scipy import stats
+import statsmodels.formula.api as smf
 
 
 def beta_mean(a, b):
@@ -258,6 +262,7 @@ def beta_regression_pvalues(methylation_matrix, group_labels):
 
     # Ensure the matrix and labels are aligned
     assert len(group_labels) == n_samples, "Mismatch between samples and labels."
+    unique_groups = pd.unique(group_labels)
 
     # Preprocess methylation values (clip to avoid log(0) issues)
     methylation_matrix = np.clip(methylation_matrix, 1e-6, 1 - 1e-6)
@@ -282,13 +287,13 @@ def beta_regression_pvalues(methylation_matrix, group_labels):
                     family=sm.families.Binomial()).fit()
 
         # Extract p-value for the group effect
-        p_value = model.pvalues["C(group)[T.1]"]
+        p_value = model.pvalues["C(group)[T." + str(unique_groups[1]) + "]"]
         p_values.append(p_value)
 
     return np.array(p_values)
 
 
-def smooth_pvalues(pvalues, positions, max_dist=500):
+def smooth_pvalues_rolling(pvalues, positions, max_dist=500):
     """
     Smooth p-values using spatial correlation between CpG sites.
 
@@ -312,6 +317,40 @@ def smooth_pvalues(pvalues, positions, max_dist=500):
         smoothed_pvalues[i] = combined_pval
 
     return smoothed_pvalues
+
+
+def smooth_pvalues_window(pvalues, positions, window_size=1000):
+    z_scores = -norm.ppf(np.clip(pvalues, 1e-10, 1 - 1e-10))
+    smoothed_z = np.zeros_like(z_scores)
+    
+    # Sort by position
+    idx = np.argsort(positions)
+    sorted_pos = positions[idx]
+    sorted_z = z_scores[idx]
+    
+    # Sliding window average
+    for i in range(len(sorted_pos)):
+        window = np.abs(sorted_pos - sorted_pos[i]) <= window_size
+        smoothed_z[idx[i]] = np.mean(sorted_z[window])
+    
+    # Convert back to p-values
+    return 2 * (1 - norm.cdf(np.abs(smoothed_z)))
+
+
+def smooth_pvalues_spline(pvalues, positions, smoothing=0.5):
+    z_scores = -norm.ppf(np.clip(pvalues, 1e-10, 1 - 1e-10))
+    
+    # Sort by position
+    idx = np.argsort(positions)
+    sorted_pos = positions[idx]
+    sorted_z = z_scores[idx]
+    
+    # Fit spline (s controls smoothing strength)
+    spline = UnivariateSpline(sorted_pos, sorted_z, s=smoothing*len(sorted_pos))
+    smoothed_z = spline(positions)
+    
+    # Convert back to p-values
+    return 2 * (1 - norm.cdf(np.abs(smoothed_z)))
 
 
 def correct_pvalues_autocorr(pvalues, positions, max_dist=500, method='fdr_bh'):
@@ -387,10 +426,207 @@ def combine_cluster_pvalues(pvalues, clusters):
 
     return np.array(combined_pvalues)
 
-def detect_dmrs(pvalues, positions, length_scale=1000, noise_level=1e-4, pvalue_threshold=0.05, max_gap=500, min_cpgs=3):
+def call_dmps(data, group_labels, method='ttest', 
+             covariates=None, alpha=0.05, correction='fdr_bh', 
+             logit_transform=True, min_delta=0.05):
+    """
+    Find differentially methylated positions (DMPs) between groups using various statistical methods.
+    
+    Parameters:
+    -----------
+   data : IntervalFrame
+        2D array with methylation beta values (shape: n_cpgs × n_samples)
+    group_labels : numpy.ndarray
+        1D array with group assignments for each sample
+    method : str
+        Statistical method to use: 'ttest', 'mannwhitney', 'logistic', or 'beta'
+    covariates : numpy.ndarray or pandas.DataFrame, optional
+        2D array of covariates (shape: n_samples × n_covariates)
+    alpha : float
+        Significance level for adjusted p-values
+    correction : str
+        Method for multiple testing correction (see statsmodels.stats.multitest)
+    logit_transform : bool
+        Whether to logit transform methylation values for t-tests (recommended)
+    min_delta : float
+        Minimum absolute methylation difference to consider a DMP significant
+        
+    Returns:
+    --------
+    pandas.DataFrame
+        Results with statistics, p-values, and significance calls
+    """
+    methylation_data = data.df.values
+    unique_groups = np.unique(group_labels)
+    if len(unique_groups) != 2:
+        raise ValueError("This function currently supports only two groups")
+    
+    n_cpgs = methylation_data.shape[0]
+    n_samples = methylation_data.shape[1]
+    
+    if len(group_labels) != n_samples:
+        raise ValueError(f"group_labels length ({len(group_labels)}) must match the number of samples ({n_samples})")
+    
+    # Convert group labels to binary (0/1)
+    group_binary = np.zeros(n_samples)
+    group_binary[group_labels == unique_groups[1]] = 1
+    
+    group1_idx = group_labels == unique_groups[0]
+    group2_idx = group_labels == unique_groups[1]
+    
+    # Initialize results storage
+    pvals = []
+    stats_values = []
+    delta_betas = []
+    coef_values = []
+    
+    # Process each CpG site
+    for cpg_idx in range(n_cpgs):
+        # Extract methylation values for this CpG
+        cpg_values = methylation_data[cpg_idx, :]
+        
+        # Calculate mean difference between groups
+        mean_group1 = np.mean(cpg_values[group1_idx])
+        mean_group2 = np.mean(cpg_values[group2_idx])
+        delta = mean_group2 - mean_group1
+        delta_betas.append(delta)
+        
+        # Apply statistical test based on selected method
+        if method == 'ttest':
+            values_group1 = cpg_values[group1_idx]
+            values_group2 = cpg_values[group2_idx]
+            
+            # Apply logit transform if requested (handles bounds better)
+            if logit_transform:
+                # Avoid log(0) and log(1) issues
+                epsilon = 1e-6
+                values_group1 = np.clip(values_group1, epsilon, 1-epsilon)
+                values_group2 = np.clip(values_group2, epsilon, 1-epsilon)
+                values_group1 = np.log(values_group1 / (1 - values_group1))
+                values_group2 = np.log(values_group2 / (1 - values_group2))
+            
+            t_stat, p_val = stats.ttest_ind(values_group1, values_group2, equal_var=False)
+            pvals.append(p_val)
+            stats_values.append(t_stat)
+            coef_values.append(delta)
+            
+        elif method == 'mannwhitney':
+            values_group1 = cpg_values[group1_idx]
+            values_group2 = cpg_values[group2_idx]
+            u_stat, p_val = stats.mannwhitneyu(values_group1, values_group2)
+            pvals.append(p_val)
+            stats_values.append(u_stat)
+            coef_values.append(delta)
+            
+        elif method == 'logistic':
+            # For logistic regression, methylation is predictor, group is outcome
+            X = cpg_values.reshape(-1, 1)
+            y = group_binary
+            
+            # Add intercept and standardize methylation values
+            X = StandardScaler().fit_transform(X)
+            X = sm.add_constant(X)
+            
+            # Add covariates if provided
+            if covariates is not None:
+                if isinstance(covariates, np.ndarray):
+                    X = np.column_stack((X, covariates))
+                else:
+                    X = np.column_stack((X, covariates.values))
+            
+            try:
+                # Fit logistic regression model
+                model = sm.Logit(y, X)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    results = model.fit(disp=0, method='bfgs')
+                
+                # Extract coefficient and p-value for methylation effect (index 1)
+                pvals.append(results.pvalues[1])
+                stats_values.append(results.tvalues[1])
+                coef_values.append(results.params[1])
+            except:
+                # Handle convergence issues
+                pvals.append(1.0)
+                stats_values.append(0.0)
+                coef_values.append(0.0)
+                
+        elif method == 'beta':
+            # Proper implementation for beta regression
+            # Uses a linear model with logit-transformed methylation values
+            
+            # Avoid exact 0 and 1 values
+            epsilon = 1e-6
+            cpg_values_adj = np.clip(cpg_values, epsilon, 1-epsilon)
+            
+            # Logit transform methylation values - necessary for beta regression approximation
+            logit_values = np.log(cpg_values_adj / (1 - cpg_values_adj))
+            
+            # Create design matrix with group and covariates
+            X = sm.add_constant(group_binary.reshape(-1, 1))
+            
+            # Add covariates if provided
+            if covariates is not None:
+                if isinstance(covariates, np.ndarray):
+                    X = np.column_stack((X, covariates))
+                else:
+                    X = np.column_stack((X, covariates.values))
+            
+            try:
+                # Fit linear model on logit-transformed values
+                model = sm.OLS(logit_values, X)
+                results = model.fit()
+                
+                # Extract coefficient and p-value for group effect (index 1)
+                pvals.append(results.pvalues[1])
+                stats_values.append(results.tvalues[1])
+                coef_values.append(results.params[1])
+            except Exception as e:
+                # Handle fitting issues
+                pvals.append(1.0)
+                stats_values.append(0.0)
+                coef_values.append(0.0)
+        else:
+            raise ValueError(f"Method '{method}' not recognized. Use 'ttest', 'mannwhitney', 'logistic', or 'beta'")
+    
+    # Multiple testing correction
+    reject, pvals_corrected, _, _ = multipletests(pvals, alpha=alpha, method=correction)
+    
+    # Create results DataFrame
+    results = IntervalFrame(intervals=data.index,
+                            df = pd.DataFrame({
+                            'cpg_index': range(n_cpgs),
+                            'p_value': pvals,
+                            'adjusted_p_value': pvals_corrected,
+                            'statistic': stats_values,
+                            'effect_size': coef_values,
+                            'delta_beta': delta_betas,
+                            'is_significant': reject & (np.abs(np.array(delta_betas)) >= min_delta)
+                        }))
+    
+    return results
+
+
+def detect_chrom_dmrs(pvalues,
+                        positions,
+                        chromosome,
+                        length_scale=1000,
+                        noise_level=1e-4,
+                        pvalue_threshold=0.05,
+                        max_gap=500,
+                        min_cpgs=3,
+                        smooth_method="spline"):
     # Step 1: Smooth p-values using GP regression
-    smoothed_pvalues = smooth_pvalues_gp(pvalues, positions, length_scale, noise_level)
-    #smoothed_pvalues = smooth_pvalues(pvalues, positions, max_dist=max_gap)
+    if smooth_method == "spline":
+        smoothed_pvalues = smooth_pvalues_spline(pvalues, positions)
+    elif smooth_method == "window":
+        smoothed_pvalues = smooth_pvalues_window(pvalues, positions)
+    elif smooth_method == "gp":
+        smoothed_pvalues = smooth_pvalues_gp(pvalues, positions, length_scale, noise_level)
+    elif smooth_method == "rolling":
+        smoothed_pvalues = smooth_pvalues_rolling(pvalues, positions, max_gap)
+    else:
+        raise ValueError("Invalid smoothing method. Choose 'spline', 'window', or 'gp'.")
 
     # Step 2: Identify CpG clusters
     clusters = identify_clusters(positions, smoothed_pvalues, pvalue_threshold, max_gap)
@@ -416,8 +652,51 @@ def detect_dmrs(pvalues, positions, length_scale=1000, noise_level=1e-4, pvalue_
 
     # Create IntervalFrame for DMRs
     intervals = LabeledIntervalArray()
-    intervals.add(dmr_results['start_position'].values, dmr_results['end_position'].values, np.repeat('chr1',dmr_results.shape[0]))
+    intervals.add(dmr_results['start_position'].values, dmr_results['end_position'].values, np.repeat(chromosome,dmr_results.shape[0]))
     dmr_intervals = IntervalFrame(df=dmr_results, intervals=intervals)
     dmr_intervals.df = dmr_intervals.df.drop(columns=['start_position', 'end_position'])
 
     return dmr_intervals
+
+
+def detect_dmrs(pvalues,
+                length_scale=1000,
+                noise_level=1e-4,
+                pvalue_threshold=0.05,
+                max_gap=500,
+                min_cpgs=3,
+                smooth_method="spline",
+                verbose=False):
+    """
+    Detect differentially methylated regions (DMRs) based on p-values and genomic positions.
+    """
+
+    # Iterate through chromosomes
+    dmr_results = []
+    unique_chromosomes = pvalues.index.unique_labels
+    for chrom in unique_chromosomes:
+        if verbose:
+            print(f"Processing chromosome: {chrom}", flush=True)
+
+        # Extract p-values and positions for this chromosome
+        chrom_pvalues = pvalues.loc[chrom, :].df.loc[:,"p_value"].values
+        chrom_positions = pvalues.loc[chrom, :].index.starts
+
+        # Detect DMRs for this chromosome
+        if len(chrom_pvalues) >= 10:
+            dmr_intervals = detect_chrom_dmrs(chrom_pvalues,
+                                            chrom_positions,
+                                            chrom,
+                                            length_scale=length_scale,
+                                            noise_level=noise_level,
+                                            pvalue_threshold=pvalue_threshold,
+                                            max_gap=max_gap,
+                                            min_cpgs=min_cpgs,
+                                            smooth_method=smooth_method)
+            dmr_results.append(dmr_intervals)
+
+    # Combine results from all chromosomes
+    dmrs = dmr_results[0].concat(dmr_results[1:])
+    dmrs.df.loc[:,"cluster_id"] = np.arange(dmrs.df.shape[0])
+
+    return dmrs

@@ -188,7 +188,8 @@ def bin_beta_mean_per_sample(data: IntervalFrame,
 
 def methyl_blocks(data: IntervalFrame,
                   blocks: LabeledIntervalArray | IntervalFrame | str = "MethylBlocks_hg38.parquet",
-                  impute_nan: bool = False) -> IntervalFrame:
+                  impute_nan: bool = False,
+                  method: str = "median") -> IntervalFrame:
     """
     """
 
@@ -202,9 +203,11 @@ def methyl_blocks(data: IntervalFrame,
     
     # Calculate block values
     overlap = data.index.intersect_from_LabeledIntervalArray(blocks.index, return_intervals=False, return_index=True)
-    means = data.df.iloc[overlap[1],:].groupby(overlap[0]).mean().values
-    means = pd.DataFrame(means, index=pd.Series(overlap[0]).unique(), columns=data.df.columns)
-    blocks = IntervalFrame(df=means, intervals=blocks.index[means.index.values])
+    means = data.df.iloc[overlap[1],:].groupby(overlap[0]).mean()
+    new_blocks = pd.DataFrame(np.zeros((blocks.shape[0], data.shape[1])), columns = data.df.columns)
+    new_blocks[:] = np.nan
+    new_blocks.iloc[means.index.values,:] = means.values
+    blocks = IntervalFrame(intervals=blocks.index, df=new_blocks)
 
     # Impute nan
     if impute_nan:
@@ -214,7 +217,12 @@ def methyl_blocks(data: IntervalFrame,
             x = x[~np.isnan(x)]
             alpha = (1-np.mean(x)) * (np.mean(x)**2) / np.var(x) - np.mean(x)
             beta = alpha * (1 / np.mean(x) - 1)
-            default = beta_median(alpha, beta)
+            if method == "median":
+                default = beta_median(alpha, beta)
+            elif method == "mean":
+                default = beta_mean(alpha, beta)
+            else:
+                default = beta_median(alpha, beta)
             
             # Impute
             blocks.df.loc[blocks.df.loc[:,sample].isna(), sample] = default

@@ -55,8 +55,10 @@ def declare_cython_extension(extName, use_openmp=False, include_dirs=None):
 
 def build():
     # declare Cython extension modules here
-    ext_module_illumina = declare_cython_extension( "MethylVerse.core.microarray.read_illumina", use_openmp=False , include_dirs=include_dirs )
-    ext_module_methyldackel = declare_cython_extension( "MethylVerse.core.sequencing.read_methyldackel.read_methyldackel", use_openmp=False , include_dirs=include_dirs )
+    ext_module_illumina = declare_cython_extension( "MethylVerse.core.microarray.read_illumina", use_math=False, use_openmp=False , include_dirs=include_dirs )
+    ext_module_methyldackel = declare_cython_extension( "MethylVerse.core.sequencing.read_methyldackel.read_methyldackel", use_math=False, use_openmp=False , include_dirs=include_dirs )
+    ext_module_merge = declare_cython_extension( "MethylVerse.tools.merge_regions.merge_regions", use_math=False, use_openmp=False , include_dirs=include_dirs )
+
 
     # this is mainly to allow a manual logical ordering of the declared modules
     cython_ext_modules = [ext_module_illumina, ext_module_methyldackel]
