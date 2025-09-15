@@ -36,7 +36,7 @@ data. Raw reference data is also available at on Zenodo.
 
 ## Usage
 
-Test numpy random integers:
+General useage:
 
 ```python
 import MethylVerse as mv
