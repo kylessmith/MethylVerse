@@ -3,7 +3,6 @@ import pandas as pd
 from projectframe import ProjectFrame
 from intervalframe import IntervalFrame
 from ailist import LabeledIntervalArray
-from msr import MSRpeaks_from_IntervalFrame, MSRsegment_from_IntervalFrame
 import ngsfragments as ngs
 
 
@@ -330,64 +329,3 @@ def bin_data(signal_iframe: IntervalFrame,
     return bin_results
 
 
-def methyl_peaks(pf: ProjectFrame,
-                 obs: str,
-                 key: str = "binary_betas",
-                 bin_size: int = 100,
-                 n_scales: int = 25,
-                 inverse: bool = False,
-                 verbose: bool = False) -> ProjectFrame:
-    """
-    """
-
-    # Get signal
-    signal_file = pf.intervals[key].loc[:,[obs]]
-
-    # Iterate over chromosomes
-    chroms = signal_file.index.unique_labels
-    peaks = IntervalFrame()
-    for chrom in chroms:
-        if verbose: print(chrom, flush=True)
-        # Bin signal
-        V = bin_data(signal_file, chrom, obs, bin_size=bin_size, inverse=inverse)
-        if V is None or V.shape[0] < 1000:
-            continue
-        chrom_peaks = MSRpeaks_from_IntervalFrame(V, "score", scales=n_scales, T=1.5, R=0.0, Eth=0, pth=1e-6, verbose=False)
-        chrom_peaks.annotate(signal_file, column=obs, method="mean")
-        peaks = peaks.concat([chrom_peaks])
-
-    # Assign to projectframe
-    pf.add_obs_intervals(obs, "methyl_peaks", peaks)
-    
-    return pf
-
-
-def methyl_segments(pf: ProjectFrame,
-                 obs: str,
-                 key: str = "binary_betas",
-                 scales: int = 25,
-                 verbose: bool = False) -> ProjectFrame:
-    """
-    """
-
-    # Get signal
-    signal_file = pf.intervals[key].loc[:,[obs]]
-
-    # Iterate over chromosomes
-    chroms = signal_file.index.unique_labels
-    segs = IntervalFrame()
-    for chrom in chroms:
-        if verbose: print(chrom, flush=True)
-        # Bin signal
-        V = bin_data(signal_file, chrom, obs, bin_size=100)
-        if V is None or V.shape[0] < 1000:
-            continue
-        chrom_segs = MSRsegment_from_IntervalFrame(V, "score", scales=scales, pth=1e-6, verbose=False)
-        chrom_segs = chrom_segs.iloc[chrom_segs.df.loc[:,"scale"].values == scales,:]
-        chrom_segs.annotate(signal_file, column=obs, method="mean")
-        segs = segs.concat([chrom_segs])
-
-    # Assign to projectframe
-    pf.add_obs_intervals(obs, "methyl_segments", segs)
-    
-    return pf

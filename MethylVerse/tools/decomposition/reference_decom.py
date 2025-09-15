@@ -13,7 +13,7 @@ from ...data.import_data import get_data_file
 from .decompose import huber_regress
 
 
-def _normal_decomposition(sample, betas, reference, normal_fluids, normal_tissues, tumor_type=None):
+def _normal_decomposition(sample, betas, reference, normal_fluids, normal_tissues, tumor_type=None, n_features=4000):
     """
     Process a single sample for decomposition with logit transformation.
     """
@@ -32,12 +32,21 @@ def _normal_decomposition(sample, betas, reference, normal_fluids, normal_tissue
     # Apply logit transformation
     sample_betas = logit(np.clip(sample_betas, 1e-6, 1 - 1e-6))
 
+    # Eliminate other tumors
+    if tumor_type == "NonmalignantBackground":
+        tumor_type = None
+    if tumor_type is not None:
+        columns = normal_fluids + normal_tissues + [tumor_type]
+    else:
+        columns = normal_fluids + normal_tissues
+    sample_ref = sample_ref.loc[:, columns]
+
     # Select top 4000 most variable probes
     max_iter = 5  # Prevent infinite looping
     iteration = 0
     coef_v = np.zeros(sample_ref.shape[1])
     while np.any(coef_v == 0) and sample_ref.shape[0] > 400 and iteration < max_iter:
-        var_probes = sample_ref.var(axis=1).nlargest(4000).index
+        var_probes = sample_ref.var(axis=1).nlargest(n_features).index
         X = sample_ref.loc[var_probes, :].values
         y = sample_betas.loc[var_probes].values
         
@@ -83,11 +92,13 @@ def normal_decomposition(betas: pd.DataFrame,
                                             'T-CD8', 'T-CenMem-CD4',
                                             'T-Eff-CD8', 'T-EffMem-CD4',
                                             'T-EffMem-CD8', 'T-Naive-CD4',
-                                            'T-Naive-CD8', 'Macrophages','Vein-Endothel'],
+                                            'T-Naive-CD8', 'Macrophages', "DendriticCells",
+                                            'Vein-Endothel','Treg','Oligodendrocytes','Microglia'],
                          normal_tissues: list[str] = ['CONTR_CEBM', 'CONTR_HEMI'],
                          tumor_types: List[str] = None,
                          n_jobs: int = -1,
                          ref_file: str = "BrainTumorDeconRef.parquet",
+                         n_features=4000,
                          verbose: bool = False) -> pd.DataFrame:
     """
     Decomposes methylation beta values into contributions from normal tissues.
@@ -103,24 +114,27 @@ def normal_decomposition(betas: pd.DataFrame,
     # Combine normal fluids and tissues
     normals = normal_fluids + normal_tissues
     if tumor_types is not None:
-        normals = normals + tumor_types
+        normals = normals + list(set(pd.unique(tumor_types)) - set(["NonmalignantBackground"]))
         tumor_types = {sample: tumor_types[i] for i, sample in enumerate(betas.index)}
     reference = reference.loc[:, normals]
 
     # Parallelize processing of each sample
     if tumor_types is None:
         results = Parallel(n_jobs=n_jobs, verbose=verbose)(
-            delayed(_normal_decomposition)(sample, betas, reference, normal_fluids, normal_tissues)
+            delayed(_normal_decomposition)(sample, betas, reference, normal_fluids, normal_tissues, None, n_features)
             for sample in betas.index
         )
     else:
         results = Parallel(n_jobs=n_jobs, verbose=verbose)(
-            delayed(_normal_decomposition)(sample, betas, reference, normal_fluids, normal_tissues, tumor_types[sample])
+            delayed(_normal_decomposition)(sample, betas, reference, normal_fluids, normal_tissues, tumor_types[sample], n_features)
             for sample in betas.index
         )
 
     # Construct results DataFrame
-    decom = pd.DataFrame(index=betas.index, columns=normal_fluids + ["Neuron"], dtype=float)
+    if tumor_types is not None:
+        decom = pd.DataFrame(index=betas.index, columns=normal_fluids + ["Neuron"] + ["Tumor"], dtype=float)
+    else:
+        decom = pd.DataFrame(index=betas.index, columns=normal_fluids + ["Neuron"], dtype=float)
     for sample, values in results:
         if values is not None:
             decom.loc[sample] = values

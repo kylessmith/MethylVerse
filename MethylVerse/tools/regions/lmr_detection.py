@@ -5,10 +5,12 @@ from hmmlearn import hmm
 from ailist import LabeledIntervalArray
 from intervalframe import IntervalFrame
 
+from ...data.import_data import get_data_file
+
 
 def detect_fhrs_hmm_based(beta_values, positions, chromosome,
                           min_sites=3, max_length=1000, n_states=3,
-                          pvalue_threshold=0.05):
+                          pvalue_threshold=0.05, smooth_window=3):
     """
     Detect focally hypomethylated regions using HMM for initial segmentation
     and then applying additional filtering criteria.
@@ -36,9 +38,13 @@ def detect_fhrs_hmm_based(beta_values, positions, chromosome,
     
     starts = positions.starts
     ends = positions.ends
+
+    # Smooth the beta values
+    smooth_values = pd.Series(beta_values).rolling(window=smooth_window, center=True).mean().values
+    smooth_values[pd.isnull(smooth_values)] = 0.5  # Handle NaNs after smoothing
     
     # 1. Use HMM to segment the methylation data
-    X = np.array(beta_values).reshape(-1, 1)
+    X = np.array(smooth_values).reshape(-1, 1)
     model = hmm.GaussianHMM(n_components=n_states, covariance_type="full", 
                           n_iter=100, random_state=42)
     model.fit(X)
@@ -123,10 +129,13 @@ def detect_fhrs_hmm_based(beta_values, positions, chromosome,
 
 def detect_lmrs(betas: IntervalFrame,
                 sample: str,
+                pmds: IntervalFrame = None,
+                umrs: IntervalFrame = None,
                 min_sites: int = 3,
                 max_length: int = 1000,
                 n_states: int = 3,
-                pvalue_threshold: float = 0.05) -> IntervalFrame:
+                pvalue_threshold: float = 0.05,
+                smooth_window: int = 3) -> IntervalFrame:
     """
     Detect focally hypermethylated regions (LMRs) using HMM for initial segmentation
     and then applying additional filtering criteria.
@@ -137,6 +146,8 @@ def detect_lmrs(betas: IntervalFrame,
         Methylation data
     sample : str
         Sample name
+    pmds : IntervalFrame, optional
+        PMD regions to exclude from LMR detection
     min_sites : int
         Minimum number of sites required in a hypermethylated region
     max_length : int
@@ -145,15 +156,34 @@ def detect_lmrs(betas: IntervalFrame,
         Number of methylation states for HMM
     pvalue_threshold : float
         Threshold for statistical significance when comparing to surrounding regions
+    smooth_window : int
+        Window size for smoothing beta values before HMM
         
     Returns:
     --------
     IntervalFrame
         List of tuples (start_idx, end_idx, pvalue, avg_methylation, length) for each LMR
     """
+
+    # Get sample beta values
+    betas = betas.loc[:,[sample]]
+
+    # Remove nan values
+    betas = betas.iloc[~pd.isnull(betas.df.values[:,0]),:]
     
+    if pmds is not None and pmds.shape[0] > 0:
+        # Exclude PMD regions from beta values
+        print("Excluding PMD regions from LMR detection", flush=True)
+        pmd_overlap = betas.index.percent_coverage(pmds.index)
+        betas = betas.iloc[pmd_overlap < 0.1,:]
+
+    # Remove CpG islands
+    islands = IntervalFrame.read_parquet(mv.data.get_data_file("CpGislands_hg38.parquet"))
+    island_overlap = betas.index.percent_coverage(islands.index)
+    betas = betas.iloc[island_overlap < 0.5,:]
+
     # Extract beta values and positions from the IntervalFrame
-    lmr_results = []
+    lmr_results = LabeledIntervalArray()
     chromosomes = betas.index.unique_labels
     for chrom in chromosomes:
         print("Processing chromosome:", chrom, flush=True)
@@ -168,12 +198,23 @@ def detect_lmrs(betas: IntervalFrame,
         # Call the detect_fhrs_hmm_based function to find LMRs
         lmrs = detect_fhrs_hmm_based(beta_values, positions, chrom,
                                                  min_sites, max_length, n_states,
-                                                 pvalue_threshold)
+                                                 pvalue_threshold, smooth_window)
         if lmrs.shape[0] > 0:
-            lmr_results.append(lmrs)
+            lmr_results.append(lmrs.index)
     
     # Call the detect_fhrs_hmm_based function to find LMRs
-    lmr_results = IntervalFrame.combine(lmr_results)
-    lmr_results.df.columns = ["pvalue", "avg_methylation", "length"]
-    
+    lmr_results = IntervalFrame(intervals=lmr_results)
+    lmr_results.annotate(betas, sample, method='mean')
+    lmr_results.annotate(betas, sample, method='n')
+    lmr_results.df.columns = ["avg_methylation", "nCpGs"]
+
+    # Filter LMRs based on avg methylation
+    keep = lmr_results.df.loc[:,"avg_methylation"].values < 0.5
+    lmr_results = lmr_results.iloc[keep,:]
+
+    # Remove UMRs
+    if umrs is not None and umrs.shape[0] > 0:
+        umrs_overlap = lmr_results.index.percent_coverage(umrs.index)
+        lmr_results = lmr_results.iloc[umrs_overlap == 0,:]
+
     return lmr_results

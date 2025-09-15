@@ -15,7 +15,7 @@ from Cython.Build import build_ext, cythonize
 include_dirs = [".", np.get_include(), ailist.get_include()]
 
 
-def declare_cython_extension(extName, use_openmp=False, include_dirs=None, use_zlib=False):
+def declare_cython_extension(extName, use_openmp=False, include_dirs=None):
     """
     Declare a Cython extension module for setuptools.
 
@@ -27,8 +27,6 @@ def declare_cython_extension(extName, use_openmp=False, include_dirs=None, use_z
             If True, set math flags and link with ``libm``.
         use_openmp : bool
             If True, compile and link with OpenMP.
-        use_zlib : bool
-            If True, link with zlib library.
 
     Returns:
         Extension object
@@ -36,23 +34,15 @@ def declare_cython_extension(extName, use_openmp=False, include_dirs=None, use_z
     """
     extPath = extName.replace(".", os.path.sep)+".pyx"
 
-    # Remove -lz from compile_args - it's a linker flag, not a compiler flag
-    compile_args = ["-O3"]
+    compile_args = ["-march=native", "-O3", "-msse", "-msse2", "-mfma", "-mfpmath=sse", '-lz']
+    compile_args = ["-O3", '-lz']
     link_args    = []
-    libraries    = []
+    libraries    = None  # value if no libraries, see setuptools.extension._Extension
 
     # OpenMP
     if use_openmp:
-        compile_args.extend(['-fopenmp'])
-        link_args.extend(['-fopenmp'])
-    
-    # zlib linking
-    if use_zlib:
-        libraries.append('z')  # This is the correct way to link zlib
-
-    # Convert empty list to None if no libraries (setuptools convention)
-    if not libraries:
-        libraries = None
+        compile_args.insert( 0, ['-fopenmp'] )
+        link_args.insert( 0, ['-fopenmp'] )
 
     return Extension( extName,
                       [extPath],
@@ -66,7 +56,7 @@ def declare_cython_extension(extName, use_openmp=False, include_dirs=None, use_z
 def build():
     # declare Cython extension modules here
     ext_module_illumina = declare_cython_extension( "MethylVerse.core.microarray.read_illumina", use_openmp=False , include_dirs=include_dirs )
-    ext_module_methyldackel = declare_cython_extension( "MethylVerse.core.sequencing.read_methyldackel.read_methyldackel", use_openmp=False , include_dirs=include_dirs, use_zlib=True )
+    ext_module_methyldackel = declare_cython_extension( "MethylVerse.core.sequencing.read_methyldackel.read_methyldackel", use_openmp=False , include_dirs=include_dirs )
     ext_module_merge = declare_cython_extension( "MethylVerse.tools.merge_regions.merge_regions", use_openmp=False , include_dirs=include_dirs )
 
 
